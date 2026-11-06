@@ -41,9 +41,13 @@ if __name__ == "__main__":
     rows = [r for r in old if r["qid"] not in qids]
     for qid in qids:
         for rep in range(1, REPEATS + 1):
-            base = graph.run(QS[qid])
-            budget = sum(len(r["new_read"]) for r in base["results"])  # 대조군 예산 = 방금 기본이 실제로 읽은 횟수
-            runs = [("기본", base), ("단일", baseline.run(QS[qid], budget)), ("배정 끔", graph.run(QS[qid], assign=False))]
+            try:
+                base = graph.run(QS[qid])
+                budget = sum(len(r["new_read"]) for r in base["results"])  # 대조군 예산 = 방금 기본이 실제로 읽은 횟수
+                runs = [("기본", base), ("단일", baseline.run(QS[qid], budget)), ("배정 끔", graph.run(QS[qid], assign=False))]
+            except Exception as e:  # 네트워크 오류 한 번에 전체 실험이 죽지 않게 그 회차만 건너뛴다
+                print(f"{qid} #{rep} 건너뜀: {type(e).__name__}", flush=True)
+                continue
             for mode, st in runs:
                 stamp = graph.save(qid, st, mode)
                 note = switch_check(st, mode)
@@ -56,6 +60,8 @@ if __name__ == "__main__":
     for qid in QIDS:
         for mode in ["기본", "배정 끔", "단일"]:
             rs = [r for r in rows if r["qid"] == qid and r["mode"] == mode]
+            if not rs:
+                continue
             table[f"{qid} {mode}"] = {k: {"평균": round(stats.mean(r[k] for r in rs), 3),
                                           "최소": min(r[k] for r in rs), "최대": max(r[k] for r in rs)} for k in keys}
     path.write_text(json.dumps({"rows": rows, "table": table}, ensure_ascii=False, indent=1),

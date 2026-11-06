@@ -128,6 +128,7 @@ class Section(BaseModel):
     title: str = Field(description="절 제목 (한국어, 장소나 주제 덩어리)")
     role: str = Field(description="역할 명단 중 하나")
     start_doc: str = Field(description="가장 먼저 읽을 문서 id (카드에 적힌 id 그대로)")
+    budget: int = Field(description="이 절이 한 바퀴에 읽을 문서 수 (예산)")
 
 
 class Plan(BaseModel):
@@ -143,6 +144,7 @@ PLAN_PROMPT = """너는 여행 리서치 팀의 코디네이터다. 질문에 �
 - 절마다 읽을 문서가 서로 갈리도록 나눈다.
 - 절마다 역할 명단에서 하나를 고른다. 역할은 관점일 뿐이니 절 제목을 역할 이름(관광지·동선·교통·시기 등)으로 짓지 않는다.
 - 절마다 시작 문서를 아래 카드의 id 그대로 하나 고른다. 절끼리 시작 문서가 겹치면 안 된다.
+- 절마다 읽을 문서 수(예산)를 {budget_min}~{budget_max}건 중에서 정한다. 관련 문서가 많은 넓은 절은 많이, 좁은 절은 적게 준다. 모든 절 예산의 합은 {total_budget}건 이하다.
 
 예시 (다른 도시 질문: "도쿄 5일 여행을 관광지·교통·시기를 고려해 짜면?")
 나쁜 목차 — 질문의 항목을 그대로 절로 옮겨서 모든 절이 같은 도시 문서를 읽는다
@@ -162,7 +164,8 @@ PLAN_PROMPT = """너는 여행 리서치 팀의 코디네이터다. 질문에 �
 def plan(state: State) -> State:
     roles = "\n".join(f"- {k}: {v}" for k, v in CFG["roles"].items())
     cards = "\n".join(card(i) for i in DOCS)
-    prompt = PLAN_PROMPT.format(max_sections=CFG["max_sections"], roles=roles, cards=cards, question=state["question"])
+    prompt = PLAN_PROMPT.format(max_sections=CFG["max_sections"], roles=roles, cards=cards, question=state["question"],
+                                budget_min=CFG["budget_min"], budget_max=CFG["budget_max"], total_budget=CFG["total_budget"])
     out = LLM.with_structured_output(Plan).invoke(prompt)
 
     fixes, sections, used = [], [], set()
@@ -180,12 +183,19 @@ def plan(state: State) -> State:
             fixes.append(f"시작 문서 '{doc}' → {near[0]}")
             doc = near[0]
         used.add(doc)
-        sections.append({"title": s.title, "role": role, "start_doc": doc})
+        budget = min(max(s.budget, CFG["budget_min"]), CFG["budget_max"])  # 예산은 범위 안으로
+        if budget != s.budget:
+            fixes.append(f"절 '{s.title}' 예산 {s.budget} → {budget}")
+        sections.append({"title": s.title, "role": role, "start_doc": doc, "budget": budget})
     if len(out.sections) > CFG["max_sections"]:
         fixes.append(f"절 {len(out.sections)}개 → {CFG['max_sections']}개로 자름")
     if not sections:
-        sections = [{"title": "개요", "role": CFG["default_role"], "start_doc": next(iter(DOCS))}]
+        sections = [{"title": "개요", "role": CFG["default_role"], "start_doc": next(iter(DOCS)), "budget": CFG["budget_max"]}]
         fixes.append("목차가 비어 '개요' 한 절로 채움")
+    while sum(sec["budget"] for sec in sections) > CFG["total_budget"]:  # 합계가 넘치면 가장 큰 절부터 한 건씩 줄인다
+        big = max(sections, key=lambda sec: sec["budget"])
+        big["budget"] -= 1
+        fixes.append(f"절 '{big['title']}' 예산 → {big['budget']} (합계 {CFG['total_budget']}건 초과)")
     if not state.get("assign", True):  # 배정 끔: 목차·역할은 그대로, 시작 문서만 지운다 (리서처가 전체 카드에서 스스로 고른다)
         for sec in sections:
             sec["start_doc"] = None
@@ -282,7 +292,7 @@ def research(task: dict) -> State:
     seen = 0
     read = [] if task["prev"] or not sec["start_doc"] else [sec["start_doc"]]
     pool = task["prev"]["read"] if task["prev"] else read
-    while len(read) < CFG["docs_per_section"]:
+    while len(read) < sec["budget"]:
         frontier = {l for d in pool + read for l in LINKS[d]}
         cands = [d for d in DOCS if d in frontier and d not in read and d not in avoid]
         if not cands:  # 링크가 막히면 남은 문서 전체로 넓힌다
@@ -392,7 +402,7 @@ if __name__ == "__main__":
 
     for i, s in enumerate(st["sections"]):
         d = st["drafts"][i]
-        print(f"절{i + 1} {s['title']} | {s['role']} | {d['round']}바퀴 {d['status']} | 읽음 {d['read']} | 리서처가 본 {d['researcher_chars']:,}자")
+        print(f"절{i + 1} {s['title']} | {s['role']} | 예산 {s['budget']}건 | {d['round']}바퀴 {d['status']} | 읽음 {d['read']} | 리서처가 본 {d['researcher_chars']:,}자")
     print("코드가 고친 배정:", st["plan_fixes"] or "없음")
     print("두 번째 원고:", st["decisions"] or "없음")
     print(f"코디네이터가 본 글자 수: {st['coordinator_chars']:,}자")
