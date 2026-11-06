@@ -115,6 +115,7 @@ class State(TypedDict, total=False):
     drafts: dict                  # 절 번호 → 채택된 원고
     decisions: list[str]          # 두 번째 원고 채택/기각 기록
     report: str
+    assign: bool                  # 스위치: 시작 문서 배정 (ablation에서 끈다)
 
 
 # ---------- ① 기획 ----------
@@ -180,6 +181,9 @@ def plan(state: State) -> State:
     if not sections:
         sections = [{"title": "개요", "role": CFG["default_role"], "start_doc": next(iter(DOCS))}]
         fixes.append("목차가 비어 '개요' 한 절로 채움")
+    if not state.get("assign", True):  # 배정 끔: 목차·역할은 그대로, 시작 문서만 지운다 (리서처가 전체 카드에서 스스로 고른다)
+        for sec in sections:
+            sec["start_doc"] = None
     return {"sections": sections, "plan_fixes": fixes, "coordinator_chars": len(prompt),
             "round": 1, "todo": list(range(len(sections))), "drafts": {}, "decisions": []}
 
@@ -189,11 +193,11 @@ def dispatch(state: State):
     secs, drafts = state["sections"], state["drafts"]
     sends = []
     for i in state["todo"]:
-        avoid = {s["start_doc"] for j, s in enumerate(secs) if j != i}
+        avoid = {s["start_doc"] for j, s in enumerate(secs) if j != i and s["start_doc"]}
         if state["round"] > 1:  # 2바퀴: 다른 절이 실제로 읽은 문서 + 자기가 이미 읽은 문서까지 피한다
             avoid |= {d for j, dr in drafts.items() if j != i for d in dr["read"]}
             avoid |= set(drafts[i]["read"])
-        others = [f"- {s['title']} (시작 문서 {s['start_doc']})" for j, s in enumerate(secs) if j != i]
+        others = [f"- {s['title']} (시작 문서 {s['start_doc'] or '없음'})" for j, s in enumerate(secs) if j != i]
         sends.append(Send("research", {
             "question": state["question"], "idx": i, "round": state["round"], "section": secs[i],
             "others": others, "avoid": sorted(avoid), "prev": drafts.get(i)}))
@@ -271,7 +275,7 @@ def research(task: dict) -> State:
     role_line = {"role": sec["role"], "role_desc": CFG["roles"][sec["role"]],
                  "question": task["question"], "title": sec["title"]}
     seen = 0
-    read = [] if task["prev"] else [sec["start_doc"]]
+    read = [] if task["prev"] or not sec["start_doc"] else [sec["start_doc"]]
     pool = task["prev"]["read"] if task["prev"] else read
     while len(read) < CFG["docs_per_section"]:
         frontier = {l for d in pool + read for l in LINKS[d]}
@@ -360,21 +364,26 @@ g.add_edge("synthesize", END)
 app = g.compile()
 
 
-def run(question):
-    return app.invoke({"question": question})
+def run(question, assign=True):
+    return app.invoke({"question": question, "assign": assign})
+
+
+def save(qid, st, mode):
+    out = ROOT / "output"
+    (out / "reports").mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    suffix = "" if mode == "기본" else {"단일": "_baseline", "배정 끔": "_noassign"}[mode]
+    (out / "reports" / f"{qid}_{stamp}{suffix}.md").write_text(st["report"], encoding="utf-8")
+    with open(out / "runs.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({"qid": qid, "stamp": stamp, "mode": mode, **st}, ensure_ascii=False) + "\n")
+    return stamp
 
 
 if __name__ == "__main__":
     qs = {q["id"]: q["question"] for q in json.loads((ROOT / "data/questions.json").read_text(encoding="utf-8"))}
     qid = sys.argv[1]
     st = run(qs.get(qid, qid))
-
-    out = ROOT / "output"
-    (out / "reports").mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    (out / "reports" / f"{qid}_{stamp}.md").write_text(st["report"], encoding="utf-8")
-    with open(out / "runs.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps({"qid": qid, "stamp": stamp, **st}, ensure_ascii=False) + "\n")
+    stamp = save(qid, st, "기본")
 
     for i, s in enumerate(st["sections"]):
         d = st["drafts"][i]
