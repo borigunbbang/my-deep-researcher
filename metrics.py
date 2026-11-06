@@ -60,8 +60,11 @@ def evaluate(st):
         "편중": round(top[0][1] / len(cites), 3) if cites else 0.0,
         "중복률": round(1 - len(set(reads)) / len(reads), 3) if reads else 0.0,
         # 경보 — 0이어야 한다
-        "허위 인용": false_cites,
+        # 허위 인용: 보고서에 남은 것 + 코드가 '읽지 않은 문서'라서 지운 줄 (기각된 바퀴 포함)
+        "허위 인용": false_cites + [x["line"] for r in st["results"] for x in r.get("dropped", []) if x["why"] == "읽지 않은 문서"],
         "반복 문장": sum(r.get("repeats", 0) for r in st["results"]),  # 코드가 지운 되풀이 문장 수 (기각된 바퀴 포함)
+        # 발췌 불일치: 원문 구절이 그 문서에 없거나, 너무 짧거나, 아예 없어서 코드가 지운 줄
+        "발췌 불일치": Counter(x["why"] for r in st["results"] for x in r.get("dropped", []) if x["why"] != "읽지 않은 문서"),
         # 기록 — 지표가 아니다
         "절별": sections,
         "코디네이터가 본 글자": st["coordinator_chars"],
@@ -77,10 +80,10 @@ if __name__ == "__main__":
     runs = [json.loads(l) for l in (ROOT / "output/runs.jsonl").read_text(encoding="utf-8").splitlines()][-n:]
     for st in runs:
         m = evaluate(st)
-        alarm = "⚠️ " if m["허위 인용"] or m["반복 문장"] else "✅ "
-        print(f"{alarm}{st['qid']} {st['stamp']} | 근거 {m['근거 비율']:.1%} | 읽고 안 씀 {len(m['읽고 안 쓴 문서'])}건 | "
-              f"편중 {m['편중']:.1%} | 중복 {m['중복률']:.1%} | 허위 인용 {len(m['허위 인용'])} {m['허위 인용'] or ''}| "
-              f"반복 문장 {m['반복 문장']}")
+        alarm = "⚠️ " if m["허위 인용"] or m["반복 문장"] or m["발췌 불일치"] else "✅ "
+        print(f"{alarm}{st['qid']} {st.get('mode', '기본')} {st['stamp']} | 근거 {m['근거 비율']:.1%} | 읽고 안 씀 {len(m['읽고 안 쓴 문서'])}건 | "
+              f"편중 {m['편중']:.1%} | 중복 {m['중복률']:.1%} | 허위 인용 {len(m['허위 인용'])} | "
+              f"반복 문장 {m['반복 문장']} | 발췌 불일치 {sum(m['발췌 불일치'].values())} {dict(m['발췌 불일치']) or ''}")
         print(f"   절별 근거 {[f'{s['근거 비율']:.0%}' for s in m['절별'].values()]} | 코디네이터 {m['코디네이터가 본 글자']:,}자 · "
               f"리서처 합 {m['리서처가 본 글자(합)']:,}자 (한 명 최대 {m['리서처 한 명이 본 글자(최대)']:,}자) | "
               f"보고서 {m['보고서 글자']:,}자 | 다시 나간 절 {m['다시 나간 절']}")

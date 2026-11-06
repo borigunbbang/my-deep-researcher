@@ -34,6 +34,71 @@ def valid_cites(text, read):  # 인용은 «문서 제목» — id로 바꿔 읽
     return [c for c in CITE.findall(text) if TITLE2ID.get(c) in read]
 
 
+# ---------- 발췌 대조: 문장마다 붙인 영어 원문 구절이 그 문서에 글자 그대로 있는지 코드가 본다 ----------
+LINE = re.compile(r"^(?P<s>.+?)\s*«(?P<t>[^»]+)»\s*⟦(?P<q>.+?)⟧\s*[.。]?$")
+MIN_QUOTE = 30  # 구절이 원문과 연속 30자 이상 그대로 겹쳐야 통과 (Q3 기록에서 지어낸 구절은 18자 이하, 옮긴 구절은 44자 이상으로 갈렸다)
+
+
+def norm(x):
+    x = x.lower().replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"').replace("–", "-").replace("—", "-")
+    return re.sub(r"\s+", " ", x).strip(" .,;:'\"")
+
+
+NORM = {i: norm(d["text"]) for i, d in DOCS.items()}
+
+
+def overlap(q, doc):
+    """구절과 원문이 연속으로 그대로 겹치는 가장 긴 길이 (한 글자씩 바꿔 옮긴 구절은 살리고, 지어낸 구절은 걸러낸다)"""
+    if q in doc:
+        return len(q)
+    return difflib.SequenceMatcher(None, q, doc, autojunk=False).find_longest_match(0, len(q), 0, len(doc)).size
+
+
+def check_lines(raw, read):
+    """원고 줄을 대조해 통과한 줄만 남긴다. 반환: 남은 줄, 되풀이 수, 지운 줄(이유 포함)"""
+    kept, seen, repeats, dropped = [], set(), 0, []
+    for line in (l.strip() for l in raw.splitlines()):
+        if not line:
+            continue
+        if line.startswith("#"):
+            kept.append({"heading": line})
+            continue
+        if line in seen:  # 같은 문장이 되풀이되면 두 번째부터 지운다 (폭주 대비)
+            repeats += 1
+            continue
+        seen.add(line)
+        m = LINE.match(line)
+        doc = TITLE2ID.get(m["t"].strip()) if m else None
+        if not m:
+            why = "형식 (인용·발췌 없음)"
+        elif doc not in read:
+            why = "읽지 않은 문서"
+        elif len(norm(m["q"])) < MIN_QUOTE:
+            why = "발췌가 너무 짧음"
+        elif overlap(norm(m["q"]), NORM[doc]) < MIN_QUOTE:
+            why = "발췌가 문서에 없음"
+        else:
+            kept.append({"s": m["s"].strip(), "title": m["t"].strip(), "quote": m["q"].strip()})
+            continue
+        dropped.append({"line": line, "why": why})
+    return kept, repeats, dropped
+
+
+def render(lines, with_quote=False):
+    """대조를 통과한 줄을 문단으로 잇는다 (# 줄은 절 제목)"""
+    out, body = [], []
+    for l in lines + [{"heading": None}]:
+        if "heading" in l:
+            if body:
+                out.append(" ".join(body))
+                body = []
+            if l["heading"]:
+                out.append(l["heading"])
+        else:
+            body.append(f"{l['s']} «{l['title']}»" + (f" ⟦{l['quote']}⟧" if with_quote else ""))
+    return "\n\n".join(out)
+
+
 # ---------- 상태 ----------
 class State(TypedDict, total=False):
     question: str
@@ -148,6 +213,16 @@ PICK_PROMPT = """너는 {role}이다. {role_desc}
 후보 카드
 {cards}"""
 
+LINE_RULES = """- 한국어로, 한 줄에 한 문장씩 쓴다. 목록 기호·표를 쓰지 않는다.
+- 줄마다 끝에 그 문장의 근거 문서 제목을 «» 안에, 이어서 근거가 된 영어 원문 구절을 ⟦⟧ 안에 붙인다.
+- 제목은 '### ' 뒤에 적힌 것을 글자 그대로 쓴다. 문서 안의 소제목(== ... ==)은 문서 제목이 아니다.
+- 원문 구절은 그 문서에서 이어진 한 구절을 30자 이상 글자 그대로 복사한다. 바꿔 쓰거나 줄임표(...)로 잇지 않는다.
+- 원문 구절을 댈 수 없는 문장은 쓰지 않는다. 맺음말·요약 문장도 쓰지 않는다. 코드가 원문과 대조해 맞지 않는 줄은 지운다.
+
+형식 예시 (다른 도시, 문서 제목과 구절은 예시일 뿐이다)
+시부야 스크램블 교차로는 한 번에 수천 명이 건너는 곳이다. «Tokyo/Shibuya» ⟦thousands of people cross at once⟧
+야마노테선을 타면 신주쿠까지 7분이 걸린다. «Tokyo/Shibuya» ⟦the Yamanote Line takes 7 minutes to Shinjuku⟧"""
+
 WRITE_PROMPT = """너는 {role}이다. {role_desc}
 질문: {question}
 네가 맡은 절: {title}
@@ -155,24 +230,17 @@ WRITE_PROMPT = """너는 {role}이다. {role_desc}
 다른 리서처가 맡은 절 (그 내용은 쓰지 않는다)
 {others}
 {prev}
-규칙
-- 질문 전체에 답하지 않는다. 네가 맡은 절의 범위만 쓴다.
-- 아래 문서에 적힌 내용만 쓴다. 문서에 없는 것은 쓰지 않는다. 근거가 있는 만큼 자세히 쓴다.
-- 한국어로, 한 줄에 한 문장씩 쓴다. 목록 기호·표·소제목을 쓰지 않는다.
-- 줄마다 끝에 그 문장의 근거 문서 제목을 «» 안에 붙인다. 제목은 아래 '### ' 뒤에 적힌 것을 글자 그대로 쓴다. 문서 안의 소제목(== ... ==)은 문서 제목이 아니다.
-- 근거 문서를 붙일 수 없는 문장은 쓰지 않는다. 맺음말·요약 문장도 쓰지 않는다.
+읽은 문서
+{docs}
 
-형식 예시 (다른 도시, 문서 제목은 예시일 뿐이다)
-시부야 스크램블 교차로는 한 번에 수천 명이 건너는 곳이다. «Tokyo/Shibuya»
-야마노테선을 타면 신주쿠까지 7분이 걸린다. «Tokyo/Shibuya»
-메이지 신궁은 하라주쿠역 바로 옆에 있다. «Tokyo/Harajuku»
+규칙 (문서를 다 읽은 뒤 지킨다)
+- 질문 전체에 답하지 않는다. 네가 맡은 절의 범위만 쓴다.
+- 위 문서에 적힌 내용만 쓴다. 문서에 없는 것은 쓰지 않는다. 근거가 있는 만큼 자세히 쓴다. 소제목을 쓰지 않는다.
+{line_rules}
 
 - 원고를 다 쓴 뒤 맨 마지막 줄에 근거가 충분했는지 아래 형식으로 한 줄만 적는다.
   신고: 충분 | 이유 한 줄
-  신고: 부족 | 이유 한 줄
-
-읽은 문서
-{docs}"""
+  신고: 부족 | 이유 한 줄"""
 
 
 def research(task: dict) -> State:
@@ -195,24 +263,26 @@ def research(task: dict) -> State:
         read.append(pick if pick in cands else cands[0])
 
     prev = ""
-    if task["prev"]:
-        prev = f"\n지난 바퀴 원고 (부족 이유: {task['prev']['reason']}) — 새 문서로 보강해 다시 쓴다\n{task['prev']['text']}\n"
+    if task["prev"]:  # 지난 원고 줄은 인용·발췌를 단 채로 넘긴다 — 맞는 줄은 그대로 옮겨 적게 한다
+        prev = (f"\n지난 바퀴 원고 (부족 이유: {task['prev']['reason']})\n"
+                "- 이 줄들은 이미 원문과 대조를 통과했다. 쓸 줄은 인용·발췌까지 글자 그대로 옮겨 적고, 아래 새 문서로 보강한다.\n"
+                "- 이 줄들에 붙은 문서 제목도 인용할 수 있다.\n"
+                + "\n".join(f"{l['s']} «{l['title']}» ⟦{l['quote']}⟧" for l in task["prev"]["lines"] if "s" in l) + "\n")
     docs = "\n\n".join(f"### {DOCS[d]['title']}\n{DOCS[d]['text']}" for d in read)
-    prompt = WRITE_PROMPT.format(**role_line, others="\n".join(task["others"]) or "- 없음", prev=prev, docs=docs)
+    prompt = WRITE_PROMPT.format(**role_line, others="\n".join(task["others"]) or "- 없음", prev=prev,
+                                 line_rules=LINE_RULES, docs=docs)
     seen += len(prompt)
     raw = WRITER.invoke(prompt).content
     m = list(REPORT_LINE.finditer(raw))
     if m:  # 마지막 신고 줄을 떼어 낸다
-        text, status, reason = raw[:m[-1].start()].strip(), m[-1].group(1), m[-1].group(2).strip()
+        body, status, reason = raw[:m[-1].start()], m[-1].group(1), m[-1].group(2).strip()
     else:  # 신고 줄이 없으면(길이 상한에 잘린 경우 포함) 부족으로 본다
-        text, status, reason = raw.strip(), "부족", "신고 줄 없음"
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    kept = list(dict.fromkeys(lines))  # 같은 문장이 되풀이되면 두 번째부터 지운다 (폭주 대비)
-    text = " ".join(kept)  # 한 줄 한 문장 → 문단 하나로 잇는다
-    all_read = (task["prev"]["read"] if task["prev"] else []) + read
-    return {"results": [{"idx": task["idx"], "round": task["round"], "text": text, "status": status,
-                         "reason": reason, "read": all_read, "new_read": read, "researcher_chars": seen,
-                         "repeats": len(lines) - len(kept)}]}
+        body, status, reason = raw, "부족", "신고 줄 없음"
+    all_read = (task["prev"]["read"] if task["prev"] else []) + read  # 2바퀴는 지난 문서도 인용할 수 있다
+    lines, repeats, dropped = check_lines(body, set(all_read))
+    return {"results": [{"idx": task["idx"], "round": task["round"], "text": render(lines), "lines": lines,
+                         "status": status, "reason": reason, "read": all_read, "new_read": read,
+                         "researcher_chars": seen, "repeats": repeats, "dropped": dropped}]}
 
 
 # ---------- ④ 점검 ----------
