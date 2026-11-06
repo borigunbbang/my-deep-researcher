@@ -35,7 +35,9 @@ def valid_cites(text, read):  # 인용은 «문서 제목» — id로 바꿔 읽
 
 
 # ---------- 발췌 대조: 문장마다 붙인 영어 원문 구절이 그 문서에 글자 그대로 있는지 코드가 본다 ----------
-LINE = re.compile(r"^(?P<s>.+?)\s*«(?P<t>[^»]+)»\s*⟦(?P<q>.+?)⟧\s*[.。]?$")
+# 문장 «제목» ⟦구절⟧ 한 묶음. 한 줄에 여러 묶음이 이어져도 하나씩 떼어 따로 대조한다
+# (구절에 ⟦⟧를 못 넣게 해야 첫 ⟦부터 마지막 ⟧까지를 한 구절로 삼키지 않는다)
+SEG = re.compile(r"(?P<s>[^«»⟦⟧]+?)\s*«(?P<t>[^«»]+)»\s*⟦(?P<q>[^⟦⟧]+)⟧[\s.。]*")
 MIN_QUOTE = 30  # 구절이 원문과 연속 30자 이상 그대로 겹쳐야 통과 (Q3 기록에서 지어낸 구절은 18자 이하, 옮긴 구절은 44자 이상으로 갈렸다)
 
 
@@ -55,7 +57,8 @@ def overlap(q, doc):
 
 
 def check_lines(raw, read):
-    """원고 줄을 대조해 통과한 줄만 남긴다. 반환: 남은 줄, 되풀이 수, 지운 줄(이유 포함), 제목을 바로잡은 줄"""
+    """원고를 '문장 «제목» ⟦구절⟧' 묶음 단위로 대조해 통과한 것만 남긴다.
+    반환: 남은 문장, 되풀이 수, 지운 것(이유 포함), 제목을 바로잡은 것"""
     kept, seen, repeats, dropped, fixed = [], set(), 0, [], []
     for line in (l.strip() for l in raw.splitlines()):
         if not line:
@@ -63,28 +66,30 @@ def check_lines(raw, read):
         if line.startswith("#"):
             kept.append({"heading": line})
             continue
-        if line in seen:  # 같은 문장이 되풀이되면 두 번째부터 지운다 (폭주 대비)
-            repeats += 1
-            continue
-        seen.add(line)
-        m = LINE.match(line)
-        if not m:
-            dropped.append({"line": line, "why": "형식 (인용·발췌 없음)"})
-            continue
-        title, q = m["t"].strip(), norm(m["q"])
-        doc = TITLE2ID.get(title)
-        if len(q) < MIN_QUOTE:
-            dropped.append({"line": line, "why": "발췌가 너무 짧음"})
-            continue
-        if doc not in read or overlap(q, NORM[doc]) < MIN_QUOTE:
-            # 제목 보정: 구절이 실제로 들어 있는 읽은 문서가 있으면 그 문서로 제목을 바로잡는다 (구절이 출처를 증명한다)
-            best = max(((overlap(q, NORM[d]), d) for d in read if d != doc), default=(0, None))
-            if best[0] < MIN_QUOTE:
-                dropped.append({"line": line, "why": "읽지 않은 문서" if doc not in read else "발췌가 문서에 없음"})
+        segs = list(SEG.finditer(line))
+        rest = SEG.sub("", line).strip(" .。")
+        if rest:  # 묶음 밖에 남은 글 = 인용·구절 없이 쓴 문장
+            dropped.append({"line": rest, "why": "형식 (인용·발췌 없음)"})
+        for m in segs:
+            unit = m.group(0).strip()
+            if unit in seen:  # 같은 문장이 되풀이되면 두 번째부터 지운다 (폭주 대비)
+                repeats += 1
                 continue
-            fixed.append({"line": line, "from": title, "to": DOCS[best[1]]["title"]})
-            title = DOCS[best[1]]["title"]
-        kept.append({"s": m["s"].strip(), "title": title, "quote": m["q"].strip()})
+            seen.add(unit)
+            title, q = m["t"].strip(), norm(m["q"])
+            doc = TITLE2ID.get(title)
+            if len(q) < MIN_QUOTE:
+                dropped.append({"line": unit, "why": "발췌가 너무 짧음"})
+                continue
+            if doc not in read or overlap(q, NORM[doc]) < MIN_QUOTE:
+                # 제목 보정: 구절이 실제로 들어 있는 읽은 문서가 있으면 그 문서로 제목을 바로잡는다 (구절이 출처를 증명한다)
+                best = max(((overlap(q, NORM[d]), d) for d in read if d != doc), default=(0, None))
+                if best[0] < MIN_QUOTE:
+                    dropped.append({"line": unit, "why": "읽지 않은 문서" if doc not in read else "발췌가 문서에 없음"})
+                    continue
+                fixed.append({"line": unit, "from": title, "to": DOCS[best[1]]["title"]})
+                title = DOCS[best[1]]["title"]
+            kept.append({"s": m["s"].strip(), "title": title, "quote": m["q"].strip()})
     return kept, repeats, dropped, fixed
 
 

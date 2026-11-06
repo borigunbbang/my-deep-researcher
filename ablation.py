@@ -34,8 +34,12 @@ def switch_check(st, mode):
 
 
 if __name__ == "__main__":
-    rows = []
-    for qid in QIDS:
+    # python ablation.py Q3 처럼 질문을 고르면 그 질문만 다시 돌리고, 다른 질문의 기존 기록은 남긴다
+    qids = sys.argv[1:] or QIDS
+    path = ROOT / "output/ablation.json"
+    old = json.loads(path.read_text(encoding="utf-8"))["rows"] if path.exists() else []
+    rows = [r for r in old if r["qid"] not in qids]
+    for qid in qids:
         for rep in range(1, REPEATS + 1):
             base = graph.run(QS[qid])
             budget = sum(len(r["new_read"]) for r in base["results"])  # 대조군 예산 = 방금 기본이 실제로 읽은 횟수
@@ -43,7 +47,8 @@ if __name__ == "__main__":
             for mode, st in runs:
                 stamp = graph.save(qid, st, mode)
                 note = switch_check(st, mode)
-                rows.append({"qid": qid, "rep": rep, "mode": mode, "stamp": stamp, "check": note, **summary(st)})
+                rows.append({"qid": qid, "rep": rep, "mode": mode, "stamp": stamp, "check": note,
+                             "검사기": "묶음별 대조", **summary(st)})
                 print(f"{qid} #{rep} {mode:5} | {note}", flush=True)
 
     keys = ["근거 비율", "읽고 안 쓴 문서", "편중", "중복률", "허위 인용", "반복 문장", "발췌 불일치", "보고서 글자", "읽기 횟수"]
@@ -53,7 +58,7 @@ if __name__ == "__main__":
             rs = [r for r in rows if r["qid"] == qid and r["mode"] == mode]
             table[f"{qid} {mode}"] = {k: {"평균": round(stats.mean(r[k] for r in rs), 3),
                                           "최소": min(r[k] for r in rs), "최대": max(r[k] for r in rs)} for k in keys}
-    (ROOT / "output/ablation.json").write_text(json.dumps({"rows": rows, "table": table}, ensure_ascii=False, indent=1),
+    path.write_text(json.dumps({"rows": rows, "table": table}, ensure_ascii=False, indent=1),
                                                encoding="utf-8")
 
     print(f"\n{'':10}" + "".join(f"{k:>14}" for k in keys))
