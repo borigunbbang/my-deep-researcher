@@ -1,0 +1,6 @@
+langchain-openai==1.7.4
+langgraph==1.2.20
+pydantic==2.14.3
+python-dotenv==1.2.4
+requests==2.34.2
+tiktoken==0.14.0
