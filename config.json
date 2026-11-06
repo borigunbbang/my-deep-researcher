@@ -5,6 +5,7 @@
  "docs_per_section": 3,
  "max_rounds": 2,
  "card_chars": 250,
+ "min_lines_per_doc": 5,
  "default_role": "큰그림 담당",
  "roles": {
   "큰그림 담당": "그 지역·주제의 윤곽을 잡고 꼭 볼 곳을 간추린다.",

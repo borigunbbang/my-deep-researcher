@@ -66,6 +66,7 @@ def evaluate(st):
         # 발췌 불일치: 원문 구절이 그 문서에 없거나, 너무 짧거나, 아예 없어서 코드가 지운 줄
         "발췌 불일치": Counter(x["why"] for r in st["results"] for x in r.get("dropped", []) if x["why"] != "읽지 않은 문서"),
         # 기록 — 지표가 아니다
+        "제목 보정": [(x["from"], x["to"]) for r in st["results"] for x in r.get("fixed", [])],  # 구절로 출처를 확인해 코드가 바꾼 제목
         "절별": sections,
         "코디네이터가 본 글자": st["coordinator_chars"],
         "리서처가 본 글자(합)": sum(r["researcher_chars"] for r in st["results"]),
@@ -86,4 +87,4 @@ if __name__ == "__main__":
               f"반복 문장 {m['반복 문장']} | 발췌 불일치 {sum(m['발췌 불일치'].values())} {dict(m['발췌 불일치']) or ''}")
         print(f"   절별 근거 {[f'{s['근거 비율']:.0%}' for s in m['절별'].values()]} | 코디네이터 {m['코디네이터가 본 글자']:,}자 · "
               f"리서처 합 {m['리서처가 본 글자(합)']:,}자 (한 명 최대 {m['리서처 한 명이 본 글자(최대)']:,}자) | "
-              f"보고서 {m['보고서 글자']:,}자 | 다시 나간 절 {m['다시 나간 절']}")
+              f"보고서 {m['보고서 글자']:,}자 | 다시 나간 절 {m['다시 나간 절']} | 제목 보정 {len(m['제목 보정'])}")

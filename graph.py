@@ -55,8 +55,8 @@ def overlap(q, doc):
 
 
 def check_lines(raw, read):
-    """원고 줄을 대조해 통과한 줄만 남긴다. 반환: 남은 줄, 되풀이 수, 지운 줄(이유 포함)"""
-    kept, seen, repeats, dropped = [], set(), 0, []
+    """원고 줄을 대조해 통과한 줄만 남긴다. 반환: 남은 줄, 되풀이 수, 지운 줄(이유 포함), 제목을 바로잡은 줄"""
+    kept, seen, repeats, dropped, fixed = [], set(), 0, [], []
     for line in (l.strip() for l in raw.splitlines()):
         if not line:
             continue
@@ -68,20 +68,24 @@ def check_lines(raw, read):
             continue
         seen.add(line)
         m = LINE.match(line)
-        doc = TITLE2ID.get(m["t"].strip()) if m else None
         if not m:
-            why = "형식 (인용·발췌 없음)"
-        elif doc not in read:
-            why = "읽지 않은 문서"
-        elif len(norm(m["q"])) < MIN_QUOTE:
-            why = "발췌가 너무 짧음"
-        elif overlap(norm(m["q"]), NORM[doc]) < MIN_QUOTE:
-            why = "발췌가 문서에 없음"
-        else:
-            kept.append({"s": m["s"].strip(), "title": m["t"].strip(), "quote": m["q"].strip()})
+            dropped.append({"line": line, "why": "형식 (인용·발췌 없음)"})
             continue
-        dropped.append({"line": line, "why": why})
-    return kept, repeats, dropped
+        title, q = m["t"].strip(), norm(m["q"])
+        doc = TITLE2ID.get(title)
+        if len(q) < MIN_QUOTE:
+            dropped.append({"line": line, "why": "발췌가 너무 짧음"})
+            continue
+        if doc not in read or overlap(q, NORM[doc]) < MIN_QUOTE:
+            # 제목 보정: 구절이 실제로 들어 있는 읽은 문서가 있으면 그 문서로 제목을 바로잡는다 (구절이 출처를 증명한다)
+            best = max(((overlap(q, NORM[d]), d) for d in read if d != doc), default=(0, None))
+            if best[0] < MIN_QUOTE:
+                dropped.append({"line": line, "why": "읽지 않은 문서" if doc not in read else "발췌가 문서에 없음"})
+                continue
+            fixed.append({"line": line, "from": title, "to": DOCS[best[1]]["title"]})
+            title = DOCS[best[1]]["title"]
+        kept.append({"s": m["s"].strip(), "title": title, "quote": m["q"].strip()})
+    return kept, repeats, dropped, fixed
 
 
 def render(lines, with_quote=False):
@@ -213,7 +217,8 @@ PICK_PROMPT = """너는 {role}이다. {role_desc}
 후보 카드
 {cards}"""
 
-LINE_RULES = """- 한국어로, 한 줄에 한 문장씩 쓴다. 목록 기호·표를 쓰지 않는다.
+LINE_RULES = f"""- 한국어로, 한 줄에 한 문장씩 쓴다. 목록 기호·표를 쓰지 않는다.
+- 읽은 문서마다 맡은 범위(질문)에 맞는 내용을 찾아 문서 하나당 {CFG["min_lines_per_doc"]}문장 이상 쓴다. 맞는 내용이 없는 문서는 건너뛴다.
 - 줄마다 끝에 그 문장의 근거 문서 제목을 «» 안에, 이어서 근거가 된 영어 원문 구절을 ⟦⟧ 안에 붙인다.
 - 제목은 '### ' 뒤에 적힌 것을 글자 그대로 쓴다. 문서 안의 소제목(== ... ==)은 문서 제목이 아니다.
 - 원문 구절은 그 문서에서 이어진 한 구절을 30자 이상 글자 그대로 복사한다. 바꿔 쓰거나 줄임표(...)로 잇지 않는다.
@@ -229,18 +234,36 @@ WRITE_PROMPT = """너는 {role}이다. {role_desc}
 
 다른 리서처가 맡은 절 (그 내용은 쓰지 않는다)
 {others}
-{prev}
-읽은 문서
+
+이 절에 이미 쓴 문장 (되풀이하지 않는다)
+{written}
+
+지금 읽을 문서
 {docs}
 
 규칙 (문서를 다 읽은 뒤 지킨다)
 - 질문 전체에 답하지 않는다. 네가 맡은 절의 범위만 쓴다.
 - 위 문서에 적힌 내용만 쓴다. 문서에 없는 것은 쓰지 않는다. 근거가 있는 만큼 자세히 쓴다. 소제목을 쓰지 않는다.
-{line_rules}
+{line_rules}"""
 
-- 원고를 다 쓴 뒤 맨 마지막 줄에 근거가 충분했는지 아래 형식으로 한 줄만 적는다.
-  신고: 충분 | 이유 한 줄
-  신고: 부족 | 이유 한 줄"""
+REPORT_PROMPT = """너는 {role}이다.
+네가 맡은 절: {title}
+아래는 네가 문서 {n}건을 읽고 쓴 절 원고다 (문장 {lines}개). 이 절 원고의 근거가 충분했는지 신고한다.
+
+판단 기준
+- 기본은 '충분'이다.
+- 다음 둘 중 하나에 해당할 때만 '부족'이다.
+  ① 원고 문장이 {min_lines}개 미만이다.
+  ② 절 제목에 나온 장소나 주제를 직접 다룬 문장이 하나도 없다.
+- 다른 리서처가 맡은 절(아래)의 내용이 없는 것은 부족이 아니다.
+{others}
+
+원고
+{draft}
+
+아래 형식으로 한 줄만 적는다. 이유에는 ①·② 중 무엇에 해당하는지(또는 해당하지 않는지) 적는다.
+신고: 충분 | 이유
+신고: 부족 | 이유"""
 
 
 def research(task: dict) -> State:
@@ -262,27 +285,33 @@ def research(task: dict) -> State:
         pick = LLM.with_structured_output(Pick).invoke(prompt).doc_id
         read.append(pick if pick in cands else cands[0])
 
-    prev = ""
-    if task["prev"]:  # 지난 원고 줄은 인용·발췌를 단 채로 넘긴다 — 맞는 줄은 그대로 옮겨 적게 한다
-        prev = (f"\n지난 바퀴 원고 (부족 이유: {task['prev']['reason']})\n"
-                "- 이 줄들은 이미 원문과 대조를 통과했다. 쓸 줄은 인용·발췌까지 글자 그대로 옮겨 적고, 아래 새 문서로 보강한다.\n"
-                "- 이 줄들에 붙은 문서 제목도 인용할 수 있다.\n"
-                + "\n".join(f"{l['s']} «{l['title']}» ⟦{l['quote']}⟧" for l in task["prev"]["lines"] if "s" in l) + "\n")
-    docs = "\n\n".join(f"### {DOCS[d]['title']}\n{DOCS[d]['text']}" for d in read)
-    prompt = WRITE_PROMPT.format(**role_line, others="\n".join(task["others"]) or "- 없음", prev=prev,
-                                 line_rules=LINE_RULES, docs=docs)
+    # 쓰기는 문서 한 건씩 따로 부른다 — 한 번에 주면 맨 앞 문서에서만 쓰고 나머지를 버렸다
+    # 2바퀴는 지난 원고 줄(이미 대조 통과)을 그대로 이어받고 새 문서만 쓴다 — 제목을 갈아 끼울 일이 없다
+    all_read = (task["prev"]["read"] if task["prev"] else []) + read
+    lines = [l for l in task["prev"]["lines"] if "s" in l] if task["prev"] else []
+    repeats, dropped, fixed = 0, [], []
+    for d in read:
+        written = "\n".join(f"{l['s']} «{l['title']}»" for l in lines) or "- 없음"
+        prompt = WRITE_PROMPT.format(**role_line, others="\n".join(task["others"]) or "- 없음", written=written,
+                                     docs=f"### {DOCS[d]['title']}\n{DOCS[d]['text']}", line_rules=LINE_RULES)
+        seen += len(prompt)
+        got, rep, drop, fix = check_lines(WRITER.invoke(prompt).content, set(all_read))
+        known = {l["s"] for l in lines}
+        repeats += rep + sum(l["s"] in known for l in got if "s" in l)
+        lines += [l for l in got if "s" in l and l["s"] not in known]
+        dropped += drop
+        fixed += fix
+
+    draft = render(lines)
+    prompt = REPORT_PROMPT.format(role=sec["role"], title=sec["title"], n=len(all_read), draft=draft or "(비어 있음)",
+                                  lines=len(lines), min_lines=CFG["min_lines_per_doc"],
+                                  others="\n".join(task["others"]) or "- 없음")
     seen += len(prompt)
-    raw = WRITER.invoke(prompt).content
-    m = list(REPORT_LINE.finditer(raw))
-    if m:  # 마지막 신고 줄을 떼어 낸다
-        body, status, reason = raw[:m[-1].start()], m[-1].group(1), m[-1].group(2).strip()
-    else:  # 신고 줄이 없으면(길이 상한에 잘린 경우 포함) 부족으로 본다
-        body, status, reason = raw, "부족", "신고 줄 없음"
-    all_read = (task["prev"]["read"] if task["prev"] else []) + read  # 2바퀴는 지난 문서도 인용할 수 있다
-    lines, repeats, dropped = check_lines(body, set(all_read))
-    return {"results": [{"idx": task["idx"], "round": task["round"], "text": render(lines), "lines": lines,
+    m = REPORT_LINE.search(LLM.invoke(prompt).content)
+    status, reason = (m.group(1), m.group(2).strip()) if m else ("부족", "신고 줄 없음")
+    return {"results": [{"idx": task["idx"], "round": task["round"], "text": draft, "lines": lines,
                          "status": status, "reason": reason, "read": all_read, "new_read": read,
-                         "researcher_chars": seen, "repeats": repeats, "dropped": dropped}]}
+                         "researcher_chars": seen, "repeats": repeats, "dropped": dropped, "fixed": fixed}]}
 
 
 # ---------- ④ 점검 ----------

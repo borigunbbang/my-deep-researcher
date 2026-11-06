@@ -60,13 +60,13 @@ def run(question, budget):
     max_out = min(MAX_OUT, CFG["context_window"] - tokens - 1000)
     raw = ChatOpenAI(model=CFG["model"], temperature=0, max_tokens=max_out).invoke(prompt).content
 
-    lines, repeats, dropped = check_lines(raw, set(read))  # 멀티와 같은 대조 코드
+    lines, repeats, dropped, fixed = check_lines(raw, set(read))  # 멀티와 같은 대조 코드
     text = render(lines)
     return {"question": question, "mode": "단일", "budget": budget, "prompt_tokens": tokens, "max_out": max_out,
             "sections": [{"title": "단일 에이전트", "role": "-", "start_doc": read[0]}],
             "drafts": {"0": {"text": text, "lines": lines, "read": read, "round": 1, "status": "-", "reason": "-"}},
             "results": [{"idx": 0, "round": 1, "new_read": read, "researcher_chars": seen,
-                         "repeats": repeats, "dropped": dropped}],
+                         "repeats": repeats, "dropped": dropped, "fixed": fixed}],
             "report": f"# {question}\n\n{text}",
             "coordinator_chars": 0, "plan_fixes": [], "decisions": []}
 
