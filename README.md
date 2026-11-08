@@ -17,7 +17,8 @@ my-deep-researcher/
 ├── metrics.py           # 정답표·판정 모델 없이 세는 지표
 ├── baseline.py          # 단일 에이전트 대조군 (같은 자료·모델·도구·읽기 예산)
 ├── ablation.py          # 시작 문서 배정을 끄고 기본·대조군과 견주는 실험
-├── app.py               # 웹 데모 (작성 예정)
+├── app.py               # 웹 데모 (Streamlit) — 보고서 + 절마다 누가 무엇을 읽고 썼는지
+├── docs/                # 데모 화면 캡처
 ├── output/              # runs.jsonl · ablation.json · reports/
 └── REPORT.md
 ```
@@ -64,7 +65,13 @@ echo "OPENAI_API_KEY=sk-..." > .env
 
 ## 데모
 
-<!-- TODO: app.py 실행 방법과 화면 캡처 -->
+```bash
+.venv/bin/streamlit run app.py
+```
+
+브라우저에서 `http://localhost:8501`을 연다. 왼쪽에서 **새 질문**(직접 질문해 실행, 1~3분 걸림)이나 **지난 실행**(`output/runs.jsonl`의 기본 · 배정 끔 · 단일 기록)을 고른다. **절마다 누가 무엇을** 탭에서 절마다 역할 · 시작 문서 · 예산 · 읽은 순서 · 올린 원고 · 코드가 걸러 낸 줄을 펼쳐 본다.
+
+![절마다 누가 무엇을](docs/demo_sections.jpg)
 
 ## 자료 출처
 
